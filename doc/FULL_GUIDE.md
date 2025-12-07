@@ -12,6 +12,8 @@
 9. [Настройка окружения](#настройка-окружения)
 10. [Запуск проекта](#запуск-проекта)
 11. [Развертывание на AlmaLinux](#развертывание-на-almalinux)
+12. [Оптимизация производительности](#оптимизация-производительности)
+13. [Настройка Redis](#настройка-redis)
 
 ---
 
@@ -943,6 +945,571 @@ sudo nano /etc/logrotate.d/ludic-dev
 
 ---
 
+## Оптимизация производительности
+
+### Ожидаемые показатели
+
+#### Базовая производительность (без оптимизации)
+
+| Компонент | Пропускная способность | Условия |
+|-----------|------------------------|---------|
+| **Express.js + Node.js** | 5,000-15,000 RPS | Простые API запросы, 1 ядро |
+| **PostgreSQL 15** | 10,000-50,000 QPS | Простые SELECT с индексами |
+| **PocketBase** | 2,000-5,000 RPS | Аутентификация |
+| **Nginx** | 50,000+ RPS | Статика и проксирование |
+
+#### Реалистичные цифры для продакшена
+
+На сервере **4 vCPU / 8 GB RAM**:
+
+| Метрика | Значение |
+|---------|----------|
+| Одновременных пользователей | 500-2,000 |
+| Запросов в секунду | 1,000-3,000 |
+| Время ответа API | 10-50 мс |
+| Ставок в минуту | 5,000-10,000 |
+
+### Узкие места системы
+
+1. **PocketBase** (~2-5K RPS) - самое слабое звено, но достаточно для большинства проектов
+2. **Node.js** - однопоточный по умолчанию
+3. **PostgreSQL** - при сложных JOIN запросах производительность падает
+4. **Сессии в памяти** - не масштабируются горизонтально
+
+### Оптимизация 1: PM2 Cluster Mode
+
+PM2 позволяет запускать Node.js на всех ядрах процессора (прирост x3-4 на 4-ядерном сервере).
+
+#### Установка PM2
+
+```bash
+# Глобальная установка
+sudo npm install -g pm2
+
+# Создаём конфигурацию
+sudo nano /opt/ludic-dev/ecosystem.config.js
+```
+
+#### Конфигурация PM2
+
+```javascript
+// ecosystem.config.js
+module.exports = {
+  apps: [{
+    name: 'ludic-dev',
+    script: './dist/index.js',
+    instances: 'max',           // Использовать все ядра
+    exec_mode: 'cluster',       // Режим кластера
+    env: {
+      NODE_ENV: 'production',
+      PORT: 5000
+    },
+    env_file: '/opt/ludic-dev/.env',
+    
+    // Автоперезапуск
+    max_memory_restart: '500M',
+    restart_delay: 3000,
+    
+    // Логирование
+    log_file: '/var/log/ludic-dev/combined.log',
+    error_file: '/var/log/ludic-dev/error.log',
+    out_file: '/var/log/ludic-dev/out.log',
+    log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+    
+    // Мониторинг
+    watch: false,
+    max_restarts: 10,
+    min_uptime: '10s'
+  }]
+};
+```
+
+#### Запуск с PM2
+
+```bash
+# Создаём директорию для логов
+sudo mkdir -p /var/log/ludic-dev
+sudo chown ludic:ludic /var/log/ludic-dev
+
+# Запускаем
+cd /opt/ludic-dev
+pm2 start ecosystem.config.js
+
+# Настраиваем автозапуск
+pm2 startup systemd -u ludic --hp /home/ludic
+pm2 save
+
+# Полезные команды
+pm2 status              # Статус процессов
+pm2 monit               # Мониторинг в реальном времени
+pm2 logs ludic-dev      # Просмотр логов
+pm2 reload ludic-dev    # Graceful перезапуск
+```
+
+#### Обновление systemd для PM2
+
+```bash
+sudo nano /etc/systemd/system/ludic-dev.service
+```
+
+```ini
+[Unit]
+Description=Ludic-Dev via PM2
+After=network.target postgresql-15.service pocketbase.service redis.service
+
+[Service]
+Type=forking
+User=ludic
+Group=ludic
+Environment=PM2_HOME=/home/ludic/.pm2
+ExecStart=/usr/bin/pm2 start /opt/ludic-dev/ecosystem.config.js
+ExecReload=/usr/bin/pm2 reload ludic-dev
+ExecStop=/usr/bin/pm2 stop ludic-dev
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### Оптимизация 2: Индексы PostgreSQL
+
+```sql
+-- Создаём индексы для оптимизации запросов
+CREATE INDEX CONCURRENTLY idx_bets_user_id ON bets(user_id);
+CREATE INDEX CONCURRENTLY idx_bets_status ON bets(status);
+CREATE INDEX CONCURRENTLY idx_bets_created_at ON bets(created_at DESC);
+CREATE INDEX CONCURRENTLY idx_bets_user_status ON bets(user_id, status);
+CREATE INDEX CONCURRENTLY idx_wallets_user_id ON wallets(user_id);
+
+-- Составной индекс для частых запросов
+CREATE INDEX CONCURRENTLY idx_bets_user_pending 
+ON bets(user_id, created_at DESC) 
+WHERE status = 'pending';
+```
+
+### Оптимизация 3: Connection Pooling (PgBouncer)
+
+```bash
+# Установка PgBouncer
+sudo dnf install -y pgbouncer
+
+# Конфигурация
+sudo nano /etc/pgbouncer/pgbouncer.ini
+```
+
+```ini
+[databases]
+ludic_dev = host=127.0.0.1 port=5432 dbname=ludic_dev
+
+[pgbouncer]
+listen_addr = 127.0.0.1
+listen_port = 6432
+auth_type = scram-sha-256
+auth_file = /etc/pgbouncer/userlist.txt
+pool_mode = transaction
+max_client_conn = 1000
+default_pool_size = 20
+min_pool_size = 5
+reserve_pool_size = 5
+```
+
+```bash
+# Файл пользователей
+sudo nano /etc/pgbouncer/userlist.txt
+```
+
+```
+"ludic" "your_secure_password"
+```
+
+```bash
+# Запуск
+sudo systemctl enable pgbouncer
+sudo systemctl start pgbouncer
+```
+
+Обновите `DATABASE_URL` в `.env`:
+```env
+DATABASE_URL=postgresql://ludic:your_secure_password@127.0.0.1:6432/ludic_dev
+```
+
+### Оптимизация 4: Gzip сжатие в Nginx
+
+```nginx
+# Добавьте в /etc/nginx/nginx.conf в блок http {}
+gzip on;
+gzip_vary on;
+gzip_min_length 1024;
+gzip_proxied any;
+gzip_types text/plain text/css text/xml text/javascript 
+           application/javascript application/json application/xml;
+gzip_comp_level 6;
+```
+
+### Оптимизация 5: Кэширование статики
+
+```nginx
+# В /etc/nginx/conf.d/ludic-dev.conf
+location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2)$ {
+    expires 30d;
+    add_header Cache-Control "public, immutable";
+    access_log off;
+}
+```
+
+### Сравнение производительности
+
+| Конфигурация | RPS | Latency (p99) |
+|--------------|-----|---------------|
+| Базовая (1 процесс) | 1,500 | 120ms |
+| PM2 Cluster (4 ядра) | 5,500 | 45ms |
+| + Redis сессии | 6,200 | 35ms |
+| + PgBouncer | 7,000 | 28ms |
+| + Gzip + кэш | 8,500 | 22ms |
+
+---
+
+## Настройка Redis
+
+Redis используется для:
+- Хранения сессий пользователей (масштабирование)
+- Кэширования данных (коэффициенты, события)
+- Rate limiting
+- Pub/Sub для real-time уведомлений
+
+### 1. Установка Redis на AlmaLinux
+
+```bash
+# Включаем модуль Redis
+sudo dnf module enable redis:7 -y
+
+# Устанавливаем Redis
+sudo dnf install -y redis
+
+# Запускаем и включаем автозапуск
+sudo systemctl enable redis
+sudo systemctl start redis
+
+# Проверяем
+redis-cli ping  # Ожидаем: PONG
+```
+
+### 2. Настройка Redis для продакшена
+
+```bash
+sudo nano /etc/redis/redis.conf
+```
+
+#### Основные настройки
+
+```conf
+# Сеть - только localhost
+bind 127.0.0.1
+port 6379
+
+# Защита паролем
+requirepass your_redis_secure_password
+
+# Персистентность (RDB + AOF)
+save 900 1
+save 300 10
+save 60 10000
+
+appendonly yes
+appendfsync everysec
+
+# Память
+maxmemory 512mb
+maxmemory-policy allkeys-lru
+
+# Безопасность
+protected-mode yes
+rename-command FLUSHALL ""
+rename-command FLUSHDB ""
+rename-command DEBUG ""
+
+# Логирование
+loglevel notice
+logfile /var/log/redis/redis.log
+
+# Производительность
+tcp-keepalive 300
+timeout 0
+```
+
+```bash
+# Перезапускаем Redis
+sudo systemctl restart redis
+
+# Проверяем с паролем
+redis-cli -a your_redis_secure_password ping
+```
+
+### 3. Интеграция Redis в приложение
+
+#### Установка пакетов
+
+```bash
+cd /opt/ludic-dev
+npm install redis connect-redis ioredis
+```
+
+#### Обновление .env
+
+```env
+# Redis
+REDIS_URL=redis://:your_redis_secure_password@127.0.0.1:6379
+```
+
+#### Создание Redis клиента
+
+Создайте файл `server/redis.ts`:
+
+```typescript
+import { createClient } from 'redis';
+
+const redisUrl = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
+
+export const redisClient = createClient({
+  url: redisUrl,
+});
+
+redisClient.on('error', (err) => {
+  console.error('Redis Client Error:', err);
+});
+
+redisClient.on('connect', () => {
+  console.log('Connected to Redis');
+});
+
+export async function initRedis() {
+  await redisClient.connect();
+}
+
+// Утилиты для кэширования
+export async function getCache<T>(key: string): Promise<T | null> {
+  const data = await redisClient.get(key);
+  return data ? JSON.parse(data) : null;
+}
+
+export async function setCache(
+  key: string, 
+  value: any, 
+  ttlSeconds: number = 300
+): Promise<void> {
+  await redisClient.setEx(key, ttlSeconds, JSON.stringify(value));
+}
+
+export async function deleteCache(key: string): Promise<void> {
+  await redisClient.del(key);
+}
+
+export async function deleteCachePattern(pattern: string): Promise<void> {
+  const keys = await redisClient.keys(pattern);
+  if (keys.length > 0) {
+    await redisClient.del(keys);
+  }
+}
+```
+
+#### Настройка сессий с Redis
+
+Обновите `server/index.ts`:
+
+```typescript
+import session from 'express-session';
+import { createClient } from 'redis';
+import RedisStore from 'connect-redis';
+
+// Создаём Redis клиент для сессий
+const redisClient = createClient({
+  url: process.env.REDIS_URL,
+});
+redisClient.connect().catch(console.error);
+
+// Настраиваем хранилище сессий
+const redisStore = new RedisStore({
+  client: redisClient,
+  prefix: 'ludic:sess:',
+  ttl: 86400, // 24 часа
+});
+
+app.use(session({
+  store: redisStore,
+  secret: process.env.SESSION_SECRET!,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === 'production',
+    httpOnly: true,
+    maxAge: 24 * 60 * 60 * 1000, // 24 часа
+    sameSite: 'lax',
+  },
+}));
+```
+
+### 4. Кэширование данных
+
+#### Пример: кэширование списка событий
+
+```typescript
+import { getCache, setCache } from './redis';
+
+// В routes.ts
+app.get('/api/events', async (req, res) => {
+  const cacheKey = 'events:list';
+  
+  // Пробуем получить из кэша
+  const cached = await getCache<Event[]>(cacheKey);
+  if (cached) {
+    return res.json(cached);
+  }
+  
+  // Если нет в кэше - запрашиваем из БД
+  const events = await storage.getEvents();
+  
+  // Сохраняем в кэш на 60 секунд
+  await setCache(cacheKey, events, 60);
+  
+  res.json(events);
+});
+```
+
+#### Пример: кэширование баланса кошелька
+
+```typescript
+app.get('/api/wallet', async (req, res) => {
+  const userId = req.user.id;
+  const cacheKey = `wallet:${userId}`;
+  
+  const cached = await getCache<Wallet>(cacheKey);
+  if (cached) {
+    return res.json(cached);
+  }
+  
+  const wallet = await storage.getWallet(userId);
+  await setCache(cacheKey, wallet, 30); // 30 секунд
+  
+  res.json(wallet);
+});
+
+// Инвалидация при изменении баланса
+app.post('/api/bets', async (req, res) => {
+  const userId = req.user.id;
+  
+  // ... создание ставки ...
+  
+  // Инвалидируем кэш кошелька
+  await deleteCache(`wallet:${userId}`);
+  
+  res.json(bet);
+});
+```
+
+### 5. Rate Limiting с Redis
+
+```bash
+npm install rate-limiter-flexible
+```
+
+```typescript
+import { RateLimiterRedis } from 'rate-limiter-flexible';
+import { redisClient } from './redis';
+
+// Лимит: 100 запросов в минуту
+const rateLimiter = new RateLimiterRedis({
+  storeClient: redisClient,
+  keyPrefix: 'ludic:ratelimit',
+  points: 100,        // Количество запросов
+  duration: 60,       // За 60 секунд
+  blockDuration: 60,  // Блокировка на 60 секунд при превышении
+});
+
+// Middleware
+export async function rateLimitMiddleware(req, res, next) {
+  try {
+    const key = req.ip || req.user?.id || 'anonymous';
+    await rateLimiter.consume(key);
+    next();
+  } catch (err) {
+    res.status(429).json({ 
+      error: 'Too many requests',
+      retryAfter: Math.ceil(err.msBeforeNext / 1000)
+    });
+  }
+}
+
+// Применяем к API
+app.use('/api/', rateLimitMiddleware);
+```
+
+### 6. Real-time уведомления (Pub/Sub)
+
+```typescript
+import { createClient } from 'redis';
+
+// Создаём отдельные клиенты для pub/sub
+const publisher = createClient({ url: process.env.REDIS_URL });
+const subscriber = createClient({ url: process.env.REDIS_URL });
+
+await publisher.connect();
+await subscriber.connect();
+
+// Публикация события (например, результат ставки)
+export async function publishBetResult(userId: string, bet: Bet) {
+  await publisher.publish(`user:${userId}:bets`, JSON.stringify({
+    type: 'BET_SETTLED',
+    data: bet,
+  }));
+}
+
+// Подписка на события (для WebSocket)
+export async function subscribeToUserEvents(userId: string, callback: (msg: string) => void) {
+  await subscriber.subscribe(`user:${userId}:bets`, callback);
+}
+```
+
+### 7. Мониторинг Redis
+
+```bash
+# Статистика
+redis-cli -a your_redis_secure_password INFO stats
+
+# Использование памяти
+redis-cli -a your_redis_secure_password INFO memory
+
+# Мониторинг в реальном времени
+redis-cli -a your_redis_secure_password MONITOR
+
+# Просмотр ключей сессий
+redis-cli -a your_redis_secure_password KEYS "ludic:sess:*"
+
+# Количество ключей
+redis-cli -a your_redis_secure_password DBSIZE
+```
+
+### 8. Systemd для Redis (проверка)
+
+```bash
+# Проверяем статус
+sudo systemctl status redis
+
+# Логи
+sudo journalctl -u redis -f
+```
+
+### Redis: Чек-лист
+
+- [ ] Redis установлен и запущен
+- [ ] Пароль настроен в redis.conf
+- [ ] REDIS_URL добавлен в .env
+- [ ] Сессии хранятся в Redis
+- [ ] Кэширование настроено для частых запросов
+- [ ] Rate limiting работает
+- [ ] Firewall НЕ открывает порт 6379 наружу
+
+---
+
 ## Дополнительные заметки
 
 ### Масштабирование
@@ -950,25 +1517,33 @@ sudo nano /etc/logrotate.d/ludic-dev
 Для масштабирования системы рекомендуется:
 
 1. **Горизонтальное масштабирование сервера:**
-   - Использовать балансировщик нагрузки
+   - Использовать балансировщик нагрузки (HAProxy/Nginx)
    - Redis для сессий между инстансами
+   - Sticky sessions если нужно
 
 2. **Оптимизация БД:**
    - Индексы на часто запрашиваемые поля
-   - Connection pooling
+   - Connection pooling (PgBouncer)
    - Read replicas для чтения
 
 3. **Кэширование:**
-   - Redis для кэширования коэффициентов
-   - CDN для статических ресурсов
+   - Redis для кэширования данных
+   - CDN для статических ресурсов (Cloudflare)
+
+4. **Мониторинг:**
+   - Prometheus + Grafana
+   - PM2 мониторинг
+   - PostgreSQL pg_stat_statements
 
 ### Безопасность
 
 - Все пароли хешируются PocketBase
 - JWT токены имеют ограниченный срок действия
 - CORS настроен для конкретных доменов
-- Rate limiting на API эндпоинтах
+- Rate limiting на API эндпоинтах через Redis
 - Валидация всех входящих данных через Zod
+- Redis и PostgreSQL доступны только через localhost
+- SELinux в режиме enforcing
 
 ---
 

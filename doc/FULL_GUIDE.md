@@ -15,6 +15,7 @@
 12. [Оптимизация производительности](#оптимизация-производительности)
 13. [Настройка Redis](#настройка-redis)
 14. [Nginx Load Balancer (несколько серверов)](#nginx-load-balancer-несколько-серверов)
+15. [Мониторинг (Prometheus + Grafana)](#мониторинг-prometheus--grafana)
 
 ---
 
@@ -2050,6 +2051,87 @@ redis-cli -a password INFO stats | grep -E "connected_clients|used_memory_human"
 # Nginx активные соединения
 curl -s http://127.0.0.1:8080/nginx_status
 ```
+
+---
+
+## 15. Мониторинг (Prometheus + Grafana)
+
+Для глубокого анализа производительности и состояния системы рекомендуется использовать связку Prometheus для сбора метрик и Grafana для визуализации.
+
+### 15.1. Установка и настройка экспортера метрик
+
+В Node.js приложении необходимо установить библиотеку `prom-client` для сбора метрик:
+
+```bash
+npm install prom-client
+```
+
+В код сервера (`server/index.ts`) нужно добавить endpoint `/metrics`:
+
+```typescript
+import client from 'prom-client';
+
+// Сбор стандартных метрик (CPU, Memory, Event Loop)
+const collectDefaultMetrics = client.collectDefaultMetrics;
+collectDefaultMetrics({ timeout: 5000 });
+
+// Пример кастомной метрики: длительность запросов
+const httpRequestDurationMicroseconds = new client.Histogram({
+  name: 'http_request_duration_ms',
+  help: 'Duration of HTTP requests in ms',
+  labelNames: ['method', 'route', 'code'],
+  buckets: [0.1, 5, 15, 50, 100, 500]
+});
+
+// Middleware для измерения времени ответа
+app.use((req, res, next) => {
+  const end = httpRequestDurationMicroseconds.startTimer();
+  res.on('finish', () => {
+    end({ method: req.method, route: req.path, code: res.statusCode });
+  });
+  next();
+});
+
+// Endpoint для Prometheus
+app.get('/metrics', async (req, res) => {
+  res.set('Content-Type', client.register.contentType);
+  res.end(await client.register.metrics());
+});
+```
+
+### 15.2. Конфигурация Prometheus
+
+Создайте файл `prometheus.yml` на сервере мониторинга:
+
+```yaml
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'ludic-dev-backend'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['10.0.0.10:5000', '10.0.0.11:5000'] # IP-адреса ваших серверов приложений
+```
+
+### 15.3. Настройка Grafana
+
+1.  **Установка:** Разверните Grafana (например, через Docker или пакетный менеджер).
+2.  **Data Source:** Добавьте новый источник данных типа **Prometheus**.
+    *   URL: `http://localhost:9090` (адрес вашего Prometheus сервера).
+3.  **Дашборды:**
+    *   Импортируйте готовый дашборд для **Node.js** (ID: `11159` - Node.js Application Dashboard).
+    *   Создайте панели для бизнес-метрик: количество ставок, сумма депозитов, ошибки авторизации.
+
+### 15.4. Ключевые метрики для отслеживания
+
+*   **Node.js Process:**
+    *   `process_cpu_user_seconds_total`: Нагрузка на CPU.
+    *   `nodejs_heap_size_used_bytes`: Использование памяти (поиск утечек).
+    *   `nodejs_eventloop_lag_seconds`: Лаг событийного цикла (важно для Express!).
+*   **Business Logic:**
+    *   `http_request_duration_ms`: Время ответа API (95-й и 99-й перцентили).
+    *   `http_requests_total{code="500"}`: Количество ошибок сервера.
 
 ---
 

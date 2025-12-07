@@ -158,6 +158,51 @@
    - Обновление баланса кошелька
    - Отображение подтверждения
 
+### 2.2. Интеграция нового источника событий (Odds API)
+
+Если у вас появился внешний API (например, The Odds API, Sportradar или API поставщика), правильный способ интеграции выглядит так:
+
+#### Шаг 1: Backend Proxy (Рекомендуемый)
+
+Не вызывайте внешний API напрямую с фронтенда, чтобы не "светить" API ключи.
+
+1.  **Создайте сервис на бэкенде:**
+    В `server/routes.ts` добавьте эндпоинт `/api/events`.
+
+2.  **Логика работы:**
+    *   Бэкенд делает запрос к внешнему API.
+    *   **Кэширование:** Сохраняет ответ в Redis на 1-5 минут (чтобы не превысить лимиты API).
+    *   Отдает данные фронтенду в едином формате.
+
+```typescript
+// Пример реализации в server/routes.ts
+app.get("/api/events", async (req, res) => {
+  // 1. Проверяем кэш
+  const cached = await redis.get("events_cache");
+  if (cached) return res.json(JSON.parse(cached));
+
+  // 2. Если кэша нет, идем во внешний API
+  const response = await fetch("https://api.the-odds-api.com/v4/sports/...?apiKey=YOUR_KEY");
+  const data = await response.json();
+
+  // 3. Сохраняем в кэш и отдаем
+  await redis.set("events_cache", JSON.stringify(data), "EX", 60);
+  res.json(data);
+});
+```
+
+#### Шаг 2: Frontend (Потребление)
+
+Фронтенд просто обращается к вашему внутреннему API, не зная о внешнем источнике.
+
+```typescript
+// client/src/pages/dashboard.tsx
+const { data: events } = useQuery({
+  queryKey: ["/api/events"],
+  queryFn: () => fetch("/api/events").then(r => r.json())
+});
+```
+
 ---
 
 ## Технологический стек

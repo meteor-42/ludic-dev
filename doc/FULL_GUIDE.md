@@ -14,6 +14,7 @@
 11. [Развертывание на AlmaLinux](#развертывание-на-almalinux)
 12. [Оптимизация производительности](#оптимизация-производительности)
 13. [Настройка Redis](#настройка-redis)
+14. [Nginx Load Balancer (несколько серверов)](#nginx-load-balancer-несколько-серверов)
 
 ---
 
@@ -33,49 +34,102 @@
 
 ## Архитектура
 
-### Общая схема
+### Общая схема (Production с несколькими серверами)
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      КЛИЕНТ (React)                         │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐          │
-│  │  Auth       │  │  Dashboard  │  │  Betting    │          │
-│  │  Context    │  │  Page       │  │  Components │          │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘          │
-│         │                │                │                  │
-│         └────────────────┼────────────────┘                  │
-│                          │                                   │
-│                   TanStack Query                             │
-└──────────────────────────┼───────────────────────────────────┘
-                           │
-                    HTTP/REST API
-                           │
-┌──────────────────────────┼───────────────────────────────────┐
-│                    СЕРВЕР (Express.js)                       │
-│                          │                                   │
-│  ┌───────────────────────┼───────────────────────────────┐   │
-│  │              API Routes (routes.ts)                   │   │
-│  │   /api/auth/*    /api/wallet    /api/bets            │   │
-│  └───────────────────────┼───────────────────────────────┘   │
-│                          │                                   │
-│  ┌───────────────┐  ┌────┴────────┐  ┌───────────────┐      │
-│  │  PocketBase   │  │  Storage    │  │  Drizzle ORM  │      │
-│  │  SDK          │  │  Interface  │  │               │      │
-│  └───────┬───────┘  └──────┬──────┘  └───────┬───────┘      │
-└──────────┼─────────────────┼─────────────────┼───────────────┘
-           │                 │                 │
-           ▼                 │                 ▼
-    ┌──────────────┐         │          ┌──────────────┐
-    │  PocketBase  │         │          │  PostgreSQL  │
-    │  (Users,     │         │          │  (Wallets,   │
-    │   Auth)      │         │          │   Bets)      │
-    └──────────────┘         │          └──────────────┘
-                             │
-                    ┌────────┴────────┐
-                    │   In-Memory     │
-                    │   Storage       │
-                    │   (fallback)    │
-                    └─────────────────┘
+                              ┌─────────────────────────────────────────┐
+                              │           КЛИЕНТЫ (React SPA)           │
+                              │  Браузеры / Мобильные приложения        │
+                              └────────────────────┬────────────────────┘
+                                                   │
+                                            HTTPS (443)
+                                                   │
+                              ┌────────────────────▼────────────────────┐
+                              │        NGINX LOAD BALANCER              │
+                              │   (SSL Termination, Static Files)       │
+                              │         IP: 10.0.0.1                    │
+                              └────────────────────┬────────────────────┘
+                                                   │
+                    ┌──────────────────────────────┼──────────────────────────────┐
+                    │                              │                              │
+              ┌─────▼─────┐                  ┌─────▼─────┐                  ┌─────▼─────┐
+              │ APP SRV 1 │                  │ APP SRV 2 │                  │ APP SRV 3 │
+              │ 10.0.0.10 │                  │ 10.0.0.11 │                  │ 10.0.0.12 │
+              └─────┬─────┘                  └─────┬─────┘                  └─────┬─────┘
+                    │                              │                              │
+    ┌───────────────┼───────────────┐  ┌───────────┼───────────┐  ┌───────────────┼───────────────┐
+    │               │               │  │           │           │  │               │               │
+    │  ┌────────────▼────────────┐  │  │  ┌────────▼────────┐  │  │  ┌────────────▼────────────┐  │
+    │  │   PM2 CLUSTER MODE      │  │  │  │   PM2 CLUSTER   │  │  │  │   PM2 CLUSTER MODE      │  │
+    │  │   (4 Node.js процесса)  │  │  │  │   (4 процесса)  │  │  │  │   (4 Node.js процесса)  │  │
+    │  │   Express.js :5000      │  │  │  │   Express :5000 │  │  │  │   Express.js :5000      │  │
+    │  └─────────────────────────┘  │  │  └─────────────────┘  │  │  └─────────────────────────┘  │
+    │               │               │  │           │           │  │               │               │
+    └───────────────┼───────────────┘  └───────────┼───────────┘  └───────────────┼───────────────┘
+                    │                              │                              │
+                    └──────────────────────────────┼──────────────────────────────┘
+                                                   │
+                    ┌──────────────────────────────┼──────────────────────────────┐
+                    │                              │                              │
+              ┌─────▼─────┐                  ┌─────▼─────┐                  ┌─────▼─────┐
+              │   REDIS   │                  │ POSTGRES  │                  │POCKETBASE │
+              │ 10.0.0.20 │                  │ 10.0.0.21 │                  │ 10.0.0.22 │
+              │  :6379    │                  │  :5432    │                  │  :8090    │
+              └───────────┘                  └───────────┘                  └───────────┘
+                   │                              │                              │
+                   │                              │                              │
+         ┌─────────┴─────────┐          ┌────────┴────────┐           ┌─────────┴─────────┐
+         │ - Сессии          │          │ - wallets       │           │ - users           │
+         │ - Кэш данных      │          │ - bets          │           │ - auth tokens     │
+         │ - Rate limiting   │          │ - transactions  │           │ - profiles        │
+         │ - Pub/Sub         │          └─────────────────┘           └───────────────────┘
+         └───────────────────┘
+```
+
+### Схема для одного сервера (Development / Small Production)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              КЛИЕНТ (React)                                 │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐              │
+│  │  Auth Context   │  │  Dashboard      │  │  Betting        │              │
+│  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘              │
+│           └────────────────────┼────────────────────┘                       │
+│                          TanStack Query                                     │
+└────────────────────────────────┼────────────────────────────────────────────┘
+                                 │
+                          HTTPS (port 443)
+                                 │
+┌────────────────────────────────▼────────────────────────────────────────────┐
+│                     NGINX (Reverse Proxy + SSL)                             │
+│                          localhost:80/443                                   │
+└────────────────────────────────┬────────────────────────────────────────────┘
+                                 │
+                          HTTP (port 5000)
+                                 │
+┌────────────────────────────────▼────────────────────────────────────────────┐
+│                      PM2 CLUSTER (Express.js)                               │
+│                         localhost:5000                                      │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │                    API Routes (routes.ts)                            │   │
+│  │        /api/auth/*        /api/wallet        /api/bets               │   │
+│  └────────────────────────────────┬─────────────────────────────────────┘   │
+│                                   │                                         │
+│  ┌─────────────┐  ┌───────────────┼───────────────┐  ┌─────────────┐       │
+│  │ PocketBase  │  │          Storage              │  │ Drizzle ORM │       │
+│  │ SDK         │  │          Interface            │  │             │       │
+│  └──────┬──────┘  └───────────────┬───────────────┘  └──────┬──────┘       │
+└─────────┼─────────────────────────┼─────────────────────────┼───────────────┘
+          │                         │                         │
+          │              ┌──────────┴──────────┐              │
+          │              │                     │              │
+    ┌─────▼─────┐  ┌─────▼─────┐         ┌─────▼─────┐  ┌─────▼─────┐
+    │POCKETBASE │  │   REDIS   │         │   REDIS   │  │ POSTGRES  │
+    │  :8090    │  │  :6379    │         │  (cache)  │  │  :5432    │
+    └───────────┘  └───────────┘         └───────────┘  └───────────┘
+         │              │                      │              │
+         │         Сессии, кэш,           Rate limit      wallets,
+       users       Pub/Sub                                 bets
 ```
 
 ### Потоки данных
@@ -1510,40 +1564,492 @@ sudo journalctl -u redis -f
 
 ---
 
+## Nginx Load Balancer (несколько серверов)
+
+### 1. Обзор архитектуры
+
+При высокой нагрузке один сервер не справляется. Решение — несколько app-серверов за балансировщиком:
+
+```
+                        Интернет
+                            │
+                    ┌───────▼───────┐
+                    │  NGINX LB     │  ◄── SSL Termination
+                    │  10.0.0.1     │      Статика
+                    └───────┬───────┘
+                            │
+           ┌────────────────┼────────────────┐
+           │                │                │
+    ┌──────▼──────┐  ┌──────▼──────┐  ┌──────▼──────┐
+    │  APP SRV 1  │  │  APP SRV 2  │  │  APP SRV 3  │
+    │  10.0.0.10  │  │  10.0.0.11  │  │  10.0.0.12  │
+    │  PM2 :5000  │  │  PM2 :5000  │  │  PM2 :5000  │
+    └──────┬──────┘  └──────┬──────┘  └──────┬──────┘
+           │                │                │
+           └────────────────┼────────────────┘
+                            │
+           ┌────────────────┼────────────────┐
+           │                │                │
+    ┌──────▼──────┐  ┌──────▼──────┐  ┌──────▼──────┐
+    │    REDIS    │  │  POSTGRES   │  │ POCKETBASE  │
+    │  10.0.0.20  │  │  10.0.0.21  │  │  10.0.0.22  │
+    └─────────────┘  └─────────────┘  └─────────────┘
+```
+
+**Ключевые принципы:**
+- Балансировщик (Nginx) распределяет запросы между app-серверами
+- Все app-серверы используют ОБЩИЙ Redis, PostgreSQL и PocketBase
+- Сессии хранятся в Redis → пользователь может попасть на любой сервер
+- Статика и SSL обрабатываются на балансировщике
+
+### 2. Настройка сервера-балансировщика
+
+#### Установка Nginx
+
+```bash
+# AlmaLinux/RHEL
+sudo dnf install nginx -y
+sudo systemctl enable nginx
+```
+
+#### Основная конфигурация
+
+```nginx
+# /etc/nginx/nginx.conf
+
+user nginx;
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /run/nginx.pid;
+
+events {
+    worker_connections 4096;
+    use epoll;
+    multi_accept on;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    # Логирование
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent" "$http_x_forwarded_for" '
+                    'upstream: $upstream_addr rt=$request_time';
+
+    access_log /var/log/nginx/access.log main;
+
+    # Оптимизация
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+
+    # Gzip
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_types text/plain text/css text/xml application/json 
+               application/javascript application/xml;
+
+    # Ограничение размера запроса
+    client_max_body_size 10M;
+
+    include /etc/nginx/conf.d/*.conf;
+}
+```
+
+### 3. Конфигурация upstream
+
+```nginx
+# /etc/nginx/conf.d/ludic-upstream.conf
+
+# Upstream группа app-серверов
+upstream ludic_backend {
+    # Алгоритм балансировки (см. ниже)
+    least_conn;
+    
+    # App серверы с весами
+    server 10.0.0.10:5000 weight=3 max_fails=3 fail_timeout=30s;
+    server 10.0.0.11:5000 weight=3 max_fails=3 fail_timeout=30s;
+    server 10.0.0.12:5000 weight=2 max_fails=3 fail_timeout=30s;
+    
+    # Backup сервер (используется если основные недоступны)
+    # server 10.0.0.13:5000 backup;
+    
+    # Keepalive соединения к бэкендам
+    keepalive 32;
+}
+```
+
+### 4. Алгоритмы балансировки
+
+| Алгоритм | Описание | Когда использовать |
+|----------|----------|-------------------|
+| `round-robin` | По очереди (по умолчанию) | Одинаковые серверы, stateless |
+| `least_conn` | На сервер с меньшим числом соединений | Разная длительность запросов |
+| `ip_hash` | По IP клиента (sticky) | Когда нужна привязка к серверу |
+| `hash $request_uri` | По URL | Кэширование на серверах |
+
+```nginx
+# Round Robin (по умолчанию)
+upstream backend {
+    server 10.0.0.10:5000;
+    server 10.0.0.11:5000;
+}
+
+# Least Connections - рекомендуется
+upstream backend {
+    least_conn;
+    server 10.0.0.10:5000;
+    server 10.0.0.11:5000;
+}
+
+# IP Hash (sticky sessions по IP)
+upstream backend {
+    ip_hash;
+    server 10.0.0.10:5000;
+    server 10.0.0.11:5000;
+}
+```
+
+### 5. Конфигурация виртуального хоста
+
+```nginx
+# /etc/nginx/conf.d/ludic.conf
+
+server {
+    listen 80;
+    server_name ludic.example.com;
+    
+    # Редирект на HTTPS
+    return 301 https://$server_name$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name ludic.example.com;
+
+    # SSL сертификаты
+    ssl_certificate /etc/letsencrypt/live/ludic.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/ludic.example.com/privkey.pem;
+    
+    # SSL настройки
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    # Статические файлы (обслуживаются балансировщиком)
+    location /assets/ {
+        root /var/www/ludic/dist;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # API и приложение → upstream
+    location / {
+        proxy_pass http://ludic_backend;
+        
+        # Заголовки для бэкенда
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # WebSocket поддержка
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        
+        # Таймауты
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+        
+        # Буферизация
+        proxy_buffering on;
+        proxy_buffer_size 4k;
+        proxy_buffers 8 4k;
+    }
+
+    # Health check endpoint (не логируем)
+    location /health {
+        access_log off;
+        proxy_pass http://ludic_backend;
+    }
+}
+```
+
+### 6. Health Checks
+
+```nginx
+# Пассивные health checks (встроено в Nginx)
+upstream ludic_backend {
+    server 10.0.0.10:5000 max_fails=3 fail_timeout=30s;
+    server 10.0.0.11:5000 max_fails=3 fail_timeout=30s;
+}
+
+# Активные health checks (Nginx Plus или через скрипт)
+# Для бесплатного Nginx используем внешний мониторинг
+```
+
+**Endpoint для проверки на app-сервере:**
+
+```typescript
+// server/routes.ts
+app.get('/health', (req, res) => {
+  // Проверяем подключение к БД
+  try {
+    // Простая проверка
+    res.json({ 
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      server: process.env.SERVER_ID || 'unknown'
+    });
+  } catch (error) {
+    res.status(503).json({ status: 'unhealthy' });
+  }
+});
+```
+
+### 7. Sticky Sessions (если нужно)
+
+Если приложение требует привязки клиента к серверу:
+
+```nginx
+upstream ludic_backend {
+    ip_hash;  # Простой sticky по IP
+    
+    server 10.0.0.10:5000;
+    server 10.0.0.11:5000;
+}
+
+# Или через cookie (Nginx Plus)
+# upstream ludic_backend {
+#     sticky cookie srv_id expires=1h;
+#     server 10.0.0.10:5000;
+#     server 10.0.0.11:5000;
+# }
+```
+
+**Важно:** При использовании Redis для сессий sticky sessions НЕ нужны!
+
+### 8. Настройка App-серверов
+
+На каждом app-сервере (10.0.0.10, 10.0.0.11, 10.0.0.12):
+
+#### Переменные окружения
+
+```bash
+# /opt/ludic/.env на каждом сервере
+
+# Уникальный ID сервера (для логов)
+SERVER_ID=app-srv-1
+
+# Общий Redis (на отдельном сервере)
+REDIS_URL=redis://:password@10.0.0.20:6379
+
+# Общий PostgreSQL (на отдельном сервере)
+DATABASE_URL=postgresql://ludic:password@10.0.0.21:5432/ludic_db
+
+# Общий PocketBase
+POCKETBASE_URL=http://10.0.0.22:8090
+
+# Важно: одинаковый секрет для сессий на всех серверах!
+SESSION_SECRET=your-same-secret-on-all-servers
+```
+
+#### PM2 конфигурация
+
+```javascript
+// ecosystem.config.js
+module.exports = {
+  apps: [{
+    name: 'ludic-app',
+    script: 'dist/index.js',
+    instances: 'max',  // Все ядра CPU
+    exec_mode: 'cluster',
+    env: {
+      NODE_ENV: 'production',
+      PORT: 5000
+    }
+  }]
+};
+```
+
+#### Синхронизация кода
+
+```bash
+# Используем rsync для деплоя на все серверы
+#!/bin/bash
+SERVERS=("10.0.0.10" "10.0.0.11" "10.0.0.12")
+
+for server in "${SERVERS[@]}"; do
+    echo "Deploying to $server..."
+    rsync -avz --delete \
+        --exclude 'node_modules' \
+        --exclude '.env' \
+        /path/to/ludic/ \
+        deploy@$server:/opt/ludic/
+    
+    ssh deploy@$server "cd /opt/ludic && npm install --production && pm2 restart ludic-app"
+done
+```
+
+### 9. Настройка общих сервисов
+
+#### Redis (10.0.0.20)
+
+```bash
+# /etc/redis/redis.conf
+bind 10.0.0.20 127.0.0.1
+requirepass your_redis_secure_password
+maxmemory 2gb
+maxmemory-policy allkeys-lru
+
+# Firewall: разрешить только app-серверы
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.0.0.10" port protocol="tcp" port="6379" accept'
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.0.0.11" port protocol="tcp" port="6379" accept'
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.0.0.12" port protocol="tcp" port="6379" accept'
+sudo firewall-cmd --reload
+```
+
+#### PostgreSQL (10.0.0.21)
+
+```bash
+# /var/lib/pgsql/data/postgresql.conf
+listen_addresses = '10.0.0.21,127.0.0.1'
+max_connections = 200
+
+# /var/lib/pgsql/data/pg_hba.conf
+host    ludic_db    ludic    10.0.0.10/32    scram-sha-256
+host    ludic_db    ludic    10.0.0.11/32    scram-sha-256
+host    ludic_db    ludic    10.0.0.12/32    scram-sha-256
+```
+
+### 10. Мониторинг
+
+#### Логи балансировщика
+
+```bash
+# Просмотр распределения по серверам
+tail -f /var/log/nginx/access.log | grep "upstream:"
+
+# Ошибки
+tail -f /var/log/nginx/error.log
+```
+
+#### Статистика Nginx
+
+```nginx
+# /etc/nginx/conf.d/status.conf
+server {
+    listen 127.0.0.1:8080;
+    
+    location /nginx_status {
+        stub_status on;
+        allow 127.0.0.1;
+        deny all;
+    }
+}
+```
+
+### 11. Чек-лист развертывания
+
+#### Балансировщик (10.0.0.1)
+- [ ] Nginx установлен и настроен
+- [ ] SSL сертификаты получены (certbot)
+- [ ] Upstream настроен с правильными IP
+- [ ] Firewall открыт только для 80/443
+
+#### App-серверы (10.0.0.10-12)
+- [ ] Код синхронизирован на всех серверах
+- [ ] PM2 запущен в cluster mode
+- [ ] .env одинаковый SESSION_SECRET
+- [ ] .env указывает на общие Redis/PostgreSQL
+- [ ] Firewall открыт только для порта 5000 с балансировщика
+
+#### Общие сервисы
+- [ ] Redis доступен со всех app-серверов
+- [ ] PostgreSQL доступен со всех app-серверов  
+- [ ] PocketBase доступен со всех app-серверов
+- [ ] Firewall ограничивает доступ только app-серверами
+
+#### Тестирование
+- [ ] Приложение работает через балансировщик
+- [ ] Сессии сохраняются при переключении между серверами
+- [ ] При отключении одного сервера трафик идет на другие
+- [ ] Health checks работают
+
+---
+
 ## Дополнительные заметки
 
-### Масштабирование
+### Краткая сводка по разделам
 
-Для масштабирования системы рекомендуется:
+| Задача | Раздел документации |
+|--------|---------------------|
+| Развернуть на одном сервере | [11. Развертывание на AlmaLinux](#развертывание-на-almalinux) |
+| Оптимизировать производительность | [12. Оптимизация производительности](#оптимизация-производительности) |
+| Настроить кэширование и сессии | [13. Настройка Redis](#настройка-redis) |
+| Масштабировать на несколько серверов | [14. Nginx Load Balancer](#nginx-load-balancer-несколько-серверов) |
 
-1. **Горизонтальное масштабирование сервера:**
-   - Использовать балансировщик нагрузки (HAProxy/Nginx)
-   - Redis для сессий между инстансами
-   - Sticky sessions если нужно
+### Путь развертывания
 
-2. **Оптимизация БД:**
-   - Индексы на часто запрашиваемые поля
-   - Connection pooling (PgBouncer)
-   - Read replicas для чтения
+```
+Development → Single Server (AlmaLinux) → Multi-Server (Load Balancer)
+     │              │                            │
+     │              ├── PM2 cluster              ├── 3+ app серверов
+     │              ├── Nginx reverse proxy      ├── Nginx балансировщик
+     │              ├── Redis (локальный)        ├── Redis (отдельный сервер)
+     │              └── PostgreSQL (локальный)   ├── PostgreSQL (отдельный)
+     │                                           └── PocketBase (отдельный)
+     │
+   localhost:5000
+```
 
-3. **Кэширование:**
-   - Redis для кэширования данных
-   - CDN для статических ресурсов (Cloudflare)
+### Безопасность (сводка)
 
-4. **Мониторинг:**
-   - Prometheus + Grafana
-   - PM2 мониторинг
-   - PostgreSQL pg_stat_statements
+| Компонент | Меры защиты |
+|-----------|-------------|
+| Пароли | Хешируются PocketBase |
+| Токены | JWT с ограниченным сроком действия |
+| API | Rate limiting через Redis, валидация через Zod |
+| CORS | Настроен для конкретных доменов |
+| БД/Redis | Доступны только с app-серверов (firewall) |
+| ОС | SELinux в режиме enforcing |
 
-### Безопасность
+### Мониторинг (рекомендации)
 
-- Все пароли хешируются PocketBase
-- JWT токены имеют ограниченный срок действия
-- CORS настроен для конкретных доменов
-- Rate limiting на API эндпоинтах через Redis
-- Валидация всех входящих данных через Zod
-- Redis и PostgreSQL доступны только через localhost
-- SELinux в режиме enforcing
+- **Приложение:** PM2 мониторинг (`pm2 monit`, `pm2 logs`)
+- **Nginx:** access.log с upstream информацией, stub_status
+- **PostgreSQL:** pg_stat_statements для анализа запросов
+- **Redis:** `redis-cli INFO`, `MONITOR`
+- **Система:** Prometheus + Grafana для метрик
+
+### Полезные команды
+
+```bash
+# Статус всех сервисов
+pm2 status && systemctl status nginx redis postgresql
+
+# Логи приложения
+pm2 logs ludic-app --lines 100
+
+# Проверка подключений к БД
+sudo -u postgres psql -c "SELECT count(*) FROM pg_stat_activity;"
+
+# Redis статистика
+redis-cli -a password INFO stats | grep -E "connected_clients|used_memory_human"
+
+# Nginx активные соединения
+curl -s http://127.0.0.1:8080/nginx_status
+```
 
 ---
 

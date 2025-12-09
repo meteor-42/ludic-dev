@@ -40,6 +40,9 @@ async function verifyToken(authHeader: string | undefined): Promise<VerifyResult
   }
 }
 
+// In-memory counter of top-ups per user (resets on server restart)
+const topUpCounts: Record<string, number> = {};
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -157,7 +160,7 @@ export async function registerRoutes(
         wallet = await storage.createWallet(auth.userId);
       }
 
-      const response: any = { balance: wallet.balance };
+      const response: any = { balance: wallet.balance, topUpCount: topUpCounts[auth.userId] || 0 };
       if (auth.newToken) {
         response.newToken = auth.newToken;
       }
@@ -166,6 +169,31 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Get wallet error:", error);
       res.status(500).json({ message: "Ошибка получения баланса" });
+    }
+  });
+
+  app.post("/api/wallet/topup", async (req, res) => {
+    try {
+      const auth = await verifyToken(req.headers.authorization);
+      if (!auth) {
+        return res.status(401).json({ message: "Требуется авторизация" });
+      }
+
+      let wallet = await storage.getWalletByUserId(auth.userId);
+      if (!wallet) {
+        wallet = await storage.createWallet(auth.userId);
+      }
+
+      const current = parseFloat(wallet.balance);
+      const newBalance = (current + 1000).toFixed(2);
+      await storage.updateBalance(auth.userId, newBalance);
+
+      topUpCounts[auth.userId] = (topUpCounts[auth.userId] || 0) + 1;
+
+      res.json({ balance: newBalance, topUpCount: topUpCounts[auth.userId] });
+    } catch (error) {
+      console.error("Top up error:", error);
+      res.status(500).json({ message: "Ошибка пополнения баланса" });
     }
   });
 
@@ -202,6 +230,27 @@ export async function registerRoutes(
           message: "Некорректные данные ставки",
           errors: parseResult.error.flatten().fieldErrors,
         });
+      }
+
+      // Validate event status (only upcoming allowed)
+      const requestedEventId = Number(req.body?.eventId);
+      if (!requestedEventId || Number.isNaN(requestedEventId)) {
+        return res.status(400).json({ message: "Не указан идентификатор события" });
+      }
+      const upstream = `${EVENTS_API_URL.replace(/\/$/, "")}/events`;
+      const evResp = await fetch(upstream, { headers: { Accept: "application/json" } });
+      if (!evResp.ok) {
+        return res.status(502).json({ message: "Ошибка получения статуса события" });
+      }
+      const evData: any = await evResp.json();
+      const found = Array.isArray(evData?.events)
+        ? evData.events.find((e: any) => Number(e.eventId) === requestedEventId)
+        : null;
+      if (!found) {
+        return res.status(404).json({ message: "Событие не найдено" });
+      }
+      if (found.status !== "upcoming") {
+        return res.status(400).json({ message: "Ставки на это событие недоступны" });
       }
 
       const { eventName, selection, odds, amount, userId } = parseResult.data;

@@ -691,8 +691,8 @@ sudo systemctl enable postgresql-15
 # Создаём пользователя и базу данных
 sudo -u postgres psql << EOF
 CREATE USER ludic WITH PASSWORD 'your_secure_password';
-CREATE DATABASE ludic_dev OWNER ludic;
-GRANT ALL PRIVILEGES ON DATABASE ludic_dev TO ludic;
+CREATE DATABASE ludic_db OWNER ludic;
+GRANT ALL PRIVILEGES ON DATABASE ludic_db TO ludic;
 EOF
 ```
 

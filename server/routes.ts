@@ -2,8 +2,12 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import PocketBase from "pocketbase";
 import { storage } from "./storage";
-import { insertBetSchema } from "@shared/schema";
+import { insertBetSchema, wallets as walletsTable, bets as betsTable } from "@shared/schema";
 import { db } from "./db";
+import { eq } from "drizzle-orm";
+
+// Events upstream base URL
+const EVENTS_API_URL = process.env.EVENTS_API_URL || "http://localhost:5050";
 
 function createPocketBaseClient() {
   return new PocketBase(process.env.POCKETBASE_URL);
@@ -25,7 +29,7 @@ async function verifyToken(authHeader: string | undefined): Promise<VerifyResult
   try {
     pb.authStore.save(token, null);
     const authData = await pb.collection("users").authRefresh();
-    return { 
+    return {
       userId: authData.record.id,
       newToken: authData.token !== token ? authData.token : undefined,
     };
@@ -44,13 +48,13 @@ export async function registerRoutes(
   // Auth routes
   app.post("/api/auth/login", async (req, res) => {
     const pb = createPocketBaseClient();
-    
+
     try {
       const { email, password } = req.body;
 
       if (!email || !password) {
-        return res.status(400).json({ 
-          message: "Email и пароль обязательны" 
+        return res.status(400).json({
+          message: "Email и пароль обязательны"
         });
       }
 
@@ -77,15 +81,15 @@ export async function registerRoutes(
       });
     } catch (error: any) {
       console.error("Login error:", error);
-      
+
       if (error?.status === 400) {
-        return res.status(401).json({ 
-          message: "Неверный email или пароль" 
+        return res.status(401).json({
+          message: "Неверный email или пароль"
         });
       }
-      
-      res.status(500).json({ 
-        message: "Ошибка сервера при авторизации" 
+
+      res.status(500).json({
+        message: "Ошибка сервера при авторизации"
       });
     } finally {
       pb.authStore.clear();
@@ -94,23 +98,23 @@ export async function registerRoutes(
 
   app.get("/api/auth/me", async (req, res) => {
     const pb = createPocketBaseClient();
-    
+
     try {
       const authHeader = req.headers.authorization;
-      
+
       if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        return res.status(401).json({ 
-          message: "Требуется авторизация" 
+        return res.status(401).json({
+          message: "Требуется авторизация"
         });
       }
 
       const token = authHeader.split(" ")[1];
-      
+
       pb.authStore.save(token, null);
-      
+
       try {
         const authData = await pb.collection("users").authRefresh();
-        
+
         const user = {
           id: authData.record.id,
           email: authData.record.email,
@@ -122,14 +126,14 @@ export async function registerRoutes(
 
         res.json({ user, token: authData.token });
       } catch {
-        return res.status(401).json({ 
-          message: "Недействительный токен" 
+        return res.status(401).json({
+          message: "Недействительный токен"
         });
       }
     } catch (error) {
       console.error("Auth check error:", error);
-      res.status(500).json({ 
-        message: "Ошибка проверки авторизации" 
+      res.status(500).json({
+        message: "Ошибка проверки авторизации"
       });
     } finally {
       pb.authStore.clear();
@@ -194,7 +198,7 @@ export async function registerRoutes(
       });
 
       if (!parseResult.success) {
-        return res.status(400).json({ 
+        return res.status(400).json({
           message: "Некорректные данные ставки",
           errors: parseResult.error.flatten().fieldErrors,
         });
@@ -240,6 +244,56 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Create bet error:", error);
       res.status(500).json({ message: "Ошибка создания ставки" });
+    }
+  });
+
+  // Events routes (proxy to external events service)
+  app.get("/api/events", async (_req, res) => {
+    try {
+      const upstream = `${EVENTS_API_URL.replace(/\/$/, "")}/events`;
+      const resp = await fetch(upstream, { headers: { Accept: "application/json" } });
+      if (!resp.ok) {
+        return res.status(502).json({ message: "Upstream events API error", status: resp.status });
+      }
+      const data = await resp.json();
+      return res.json(data);
+    } catch (err) {
+      console.error("Events upstream error:", err);
+      return res.status(500).json({ message: "Failed to fetch events" });
+    }
+  });
+
+  // Leaderboard: aggregate balances and betting accuracy per user
+  app.get("/api/leaderboard", async (_req, res) => {
+    try {
+      // fetch all wallets and bets, then aggregate in-memory
+      const allWallets = await db.select().from(walletsTable);
+      const allBets = await db.select().from(betsTable);
+
+      const byUser: Record<string, { total: number; wins: number }> = {};
+      for (const b of allBets) {
+        const u = b.userId;
+        if (!byUser[u]) byUser[u] = { total: 0, wins: 0 };
+        byUser[u].total += 1;
+        if (b.status === "won") byUser[u].wins += 1;
+      }
+
+      const rows = allWallets.map((w) => {
+        const agg = byUser[w.userId] || { total: 0, wins: 0 };
+        const accuracy = agg.total > 0 ? Math.round((agg.wins / agg.total) * 100) : 0;
+        return {
+          userId: w.userId,
+          balance: w.balance,
+          totalBets: agg.total,
+          winRate: accuracy,
+        };
+      });
+
+      rows.sort((a, b) => parseFloat(b.balance) - parseFloat(a.balance));
+      res.json({ leaders: rows.slice(0, 50) });
+    } catch (err) {
+      console.error("Leaderboard error:", err);
+      res.status(500).json({ message: "Failed to build leaderboard" });
     }
   });
 

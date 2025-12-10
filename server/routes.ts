@@ -40,9 +40,6 @@ async function verifyToken(authHeader: string | undefined): Promise<VerifyResult
   }
 }
 
-// In-memory counter of top-ups per user (resets on server restart)
-const topUpCounts: Record<string, number> = {};
-
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -63,10 +60,13 @@ export async function registerRoutes(
 
       const authData = await pb.collection("users").authWithPassword(email, password);
 
+      // Get display_name from PocketBase, fallback to name, username, or email
+      const displayName = authData.record.display_name || authData.record.name || authData.record.username || authData.record.email.split('@')[0];
+
       const user = {
         id: authData.record.id,
         email: authData.record.email,
-        name: authData.record.name || authData.record.username,
+        name: displayName,
         avatar: authData.record.avatar,
         created: authData.record.created,
         updated: authData.record.updated,
@@ -75,7 +75,10 @@ export async function registerRoutes(
       // Create wallet if not exists
       let wallet = await storage.getWalletByUserId(authData.record.id);
       if (!wallet) {
-        wallet = await storage.createWallet(authData.record.id);
+        wallet = await storage.createWallet(authData.record.id, displayName);
+      } else if (wallet.userName !== displayName) {
+        // Update user name if it changed
+        await storage.updateUserName(authData.record.id, displayName || "");
       }
 
       res.json({
@@ -118,10 +121,13 @@ export async function registerRoutes(
       try {
         const authData = await pb.collection("users").authRefresh();
 
+        // Get display_name from PocketBase, fallback to name, username, or email
+        const displayName = authData.record.display_name || authData.record.name || authData.record.username || authData.record.email.split('@')[0];
+
         const user = {
           id: authData.record.id,
           email: authData.record.email,
-          name: authData.record.name || authData.record.username,
+          name: displayName,
           avatar: authData.record.avatar,
           created: authData.record.created,
           updated: authData.record.updated,
@@ -160,7 +166,7 @@ export async function registerRoutes(
         wallet = await storage.createWallet(auth.userId);
       }
 
-      const response: any = { balance: wallet.balance, topUpCount: topUpCounts[auth.userId] || 0 };
+      const response: any = { balance: wallet.balance, topUpCount: wallet.topUpCount || 0 };
       if (auth.newToken) {
         response.newToken = auth.newToken;
       }
@@ -186,11 +192,9 @@ export async function registerRoutes(
 
       const current = parseFloat(wallet.balance);
       const newBalance = (current + 1000).toFixed(2);
-      await storage.updateBalance(auth.userId, newBalance);
+      const updatedWallet = await storage.incrementTopUpCount(auth.userId, newBalance);
 
-      topUpCounts[auth.userId] = (topUpCounts[auth.userId] || 0) + 1;
-
-      res.json({ balance: newBalance, topUpCount: topUpCounts[auth.userId] });
+      res.json({ balance: newBalance, topUpCount: updatedWallet?.topUpCount || 0 });
     } catch (error) {
       console.error("Top up error:", error);
       res.status(500).json({ message: "Ошибка пополнения баланса" });
@@ -268,6 +272,14 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Сумма ставки должна быть положительной" });
       }
 
+      if (betAmount < 1) {
+        return res.status(400).json({ message: "Минимальная ставка — 1 рубль" });
+      }
+
+      if (betAmount !== Math.floor(betAmount)) {
+        return res.status(400).json({ message: "Ставка должна быть целым числом (кратным 1 рублю)" });
+      }
+
       if (betAmount > currentBalance) {
         return res.status(400).json({ message: "Недостаточно средств" });
       }
@@ -332,6 +344,7 @@ export async function registerRoutes(
         const accuracy = agg.total > 0 ? Math.round((agg.wins / agg.total) * 100) : 0;
         return {
           userId: w.userId,
+          userName: w.userName || w.userId,
           balance: w.balance,
           totalBets: agg.total,
           winRate: accuracy,

@@ -28,7 +28,7 @@ type EventItem = {
 
 type EventsResponse = { events: EventItem[] };
 
-type Leader = { userId: string; balance: string; totalBets: number; winRate: number };
+type Leader = { userId: string; userName?: string; balance: string; totalBets: number; winRate: number };
 type LeaderboardResponse = { leaders: Leader[] };
 
 function formatAmount(amount: string | number): string {
@@ -116,7 +116,21 @@ export default function DashboardPage() {
   async function placeBet() {
     if (!selected) return;
     const amount = parseFloat(betAmount);
-    if (!Number.isFinite(amount) || amount <= 0) return;
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      alert("Введите корректную сумму ставки");
+      return;
+    }
+
+    if (amount < 1) {
+      alert("Минимальная ставка — 1 рубль");
+      return;
+    }
+
+    if (amount !== Math.floor(amount)) {
+      alert("Ставка должна быть целым числом (кратным 1 рублю)");
+      return;
+    }
 
     const selectionLabel =
       selected.selectionKey === "win1" ? "П1" : selected.selectionKey === "draw" ? "Н" : "П2";
@@ -296,7 +310,7 @@ export default function DashboardPage() {
                       {leaderboardData!.leaders.map((l, idx) => (
                         <TableRow key={l.userId}>
                           <TableCell>{idx + 1}</TableCell>
-                          <TableCell className="truncate max-w-[180px]" title={l.userId}>{l.userId}</TableCell>
+                          <TableCell className="truncate max-w-[180px]" title={l.userName || l.userId}>{l.userName || l.userId}</TableCell>
                           <TableCell className="text-right font-medium">{formatAmount(l.balance)}</TableCell>
                           <TableCell className="text-right">{l.totalBets}</TableCell>
                           <TableCell className="text-right">{l.winRate}%</TableCell>

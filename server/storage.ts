@@ -5,9 +5,11 @@ import { eq, desc } from "drizzle-orm";
 export interface IStorage {
   // Wallets
   getWalletByUserId(userId: string): Promise<Wallet | undefined>;
-  createWallet(userId: string): Promise<Wallet>;
+  createWallet(userId: string, userName?: string): Promise<Wallet>;
   updateBalance(userId: string, newBalance: string): Promise<Wallet | undefined>;
-  
+  incrementTopUpCount(userId: string, newBalance: string): Promise<Wallet | undefined>;
+  updateUserName(userId: string, userName: string): Promise<Wallet | undefined>;
+
   // Bets
   createBet(bet: InsertBet & { potentialWin: string }): Promise<Bet>;
   getBetsByUserId(userId: string): Promise<Bet[]>;
@@ -22,10 +24,10 @@ export class DatabaseStorage implements IStorage {
     return wallet || undefined;
   }
 
-  async createWallet(userId: string): Promise<Wallet> {
+  async createWallet(userId: string, userName?: string): Promise<Wallet> {
     const [wallet] = await db
       .insert(wallets)
-      .values({ userId, balance: "1000.00" })
+      .values({ userId, balance: "1000.00", userName })
       .returning();
     return wallet;
   }
@@ -34,6 +36,31 @@ export class DatabaseStorage implements IStorage {
     const [wallet] = await db
       .update(wallets)
       .set({ balance: newBalance, updatedAt: new Date() })
+      .where(eq(wallets.userId, userId))
+      .returning();
+    return wallet || undefined;
+  }
+
+  async incrementTopUpCount(userId: string, newBalance: string): Promise<Wallet | undefined> {
+    const wallet = await this.getWalletByUserId(userId);
+    if (!wallet) return undefined;
+
+    const [updated] = await db
+      .update(wallets)
+      .set({
+        balance: newBalance,
+        topUpCount: (wallet.topUpCount || 0) + 1,
+        updatedAt: new Date()
+      })
+      .where(eq(wallets.userId, userId))
+      .returning();
+    return updated || undefined;
+  }
+
+  async updateUserName(userId: string, userName: string): Promise<Wallet | undefined> {
+    const [wallet] = await db
+      .update(wallets)
+      .set({ userName, updatedAt: new Date() })
       .where(eq(wallets.userId, userId))
       .returning();
     return wallet || undefined;
@@ -72,10 +99,10 @@ export class DatabaseStorage implements IStorage {
   async updateBetStatus(id: number, status: string, result?: string): Promise<Bet | undefined> {
     const [bet] = await db
       .update(bets)
-      .set({ 
-        status, 
+      .set({
+        status,
         result: result || null,
-        settledAt: status !== "pending" ? new Date() : null 
+        settledAt: status !== "pending" ? new Date() : null
       })
       .where(eq(bets.id, id))
       .returning();

@@ -8,6 +8,8 @@ export const wallets = pgTable("wallets", {
   id: serial("id").primaryKey(),
   userId: varchar("user_id", { length: 255 }).notNull().unique(),
   balance: decimal("balance", { precision: 12, scale: 2 }).notNull().default("1000.00"),
+  topUpCount: integer("top_up_count").notNull().default(0),
+  userName: varchar("user_name", { length: 255 }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

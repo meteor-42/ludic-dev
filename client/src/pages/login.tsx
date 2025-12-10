@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useLocation } from "wouter";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Loader2, Eye, EyeOff, ShieldCheck } from "lucide-react";
+import { Loader2, Eye, EyeOff } from "lucide-react";
 import { loginSchema, type LoginCredentials } from "@shared/schema";
 import { useAuth } from "@/lib/auth-context";
 import { useToast } from "@/hooks/use-toast";
@@ -10,7 +10,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { ThemeToggle } from "@/components/theme-toggle";
 
 export default function LoginPage() {
   const [, setLocation] = useLocation();
@@ -50,36 +49,29 @@ export default function LoginPage() {
   const isLoading = isSubmitting || authLoading;
 
   return (
-    <div className="min-h-screen flex flex-col bg-background">
-      <header className="flex items-center justify-end p-4">
-        <ThemeToggle />
-      </header>
-      
+    <div className="min-h-screen flex flex-col bg-white">
       <main className="flex-1 flex items-center justify-center p-4">
         <Card className="w-full max-w-md">
-          <CardHeader className="space-y-4 text-center">
-            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-primary/10">
-              <ShieldCheck className="h-7 w-7 text-primary" />
-            </div>
+          <CardHeader className="space-y-4 border-b-2 border-black pb-6">
             <div className="space-y-2">
-              <CardTitle className="text-2xl font-bold" data-testid="text-login-title">
-                Вход в систему
+              <CardTitle className="text-3xl font-bold tracking-tight" data-testid="text-login-title">
+                LOGIN
               </CardTitle>
-              <CardDescription data-testid="text-login-description">
-                Введите данные для доступа к платформе
+              <CardDescription className="text-neutral-600 font-medium" data-testid="text-login-description">
+                Enter your credentials
               </CardDescription>
             </div>
           </CardHeader>
-          
-          <CardContent>
+
+          <CardContent className="pt-6">
             <Form {...form}>
-              <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+              <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
                 <FormField
                   control={form.control}
                   name="email"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Email</FormLabel>
+                      <FormLabel className="text-xs font-bold uppercase tracking-wider">Email</FormLabel>
                       <FormControl>
                         <Input
                           type="email"
@@ -90,62 +82,61 @@ export default function LoginPage() {
                           {...field}
                         />
                       </FormControl>
-                      <FormMessage />
+                      <FormMessage className="text-xs font-medium" />
                     </FormItem>
                   )}
                 />
-                
+
                 <FormField
                   control={form.control}
                   name="password"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Пароль</FormLabel>
+                      <FormLabel className="text-xs font-bold uppercase tracking-wider">Password</FormLabel>
                       <FormControl>
                         <div className="relative">
                           <Input
                             type={showPassword ? "text" : "password"}
-                            placeholder="Введите пароль"
+                            placeholder="Enter password"
                             autoComplete="current-password"
                             disabled={isLoading}
                             data-testid="input-password"
+                            className="pr-12"
                             {...field}
                           />
-                          <Button
+                          <button
                             type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="absolute right-0 top-0 h-full px-3"
+                            className="absolute right-0 top-0 h-full px-3 flex items-center justify-center hover:bg-neutral-100 transition-colors border-l-2 border-black"
                             onClick={() => setShowPassword(!showPassword)}
                             tabIndex={-1}
                             data-testid="button-toggle-password"
                           >
                             {showPassword ? (
-                              <EyeOff className="h-4 w-4 text-muted-foreground" />
+                              <EyeOff className="h-5 w-5 text-black" />
                             ) : (
-                              <Eye className="h-4 w-4 text-muted-foreground" />
+                              <Eye className="h-5 w-5 text-black" />
                             )}
-                          </Button>
+                          </button>
                         </div>
                       </FormControl>
-                      <FormMessage />
+                      <FormMessage className="text-xs font-medium" />
                     </FormItem>
                   )}
                 />
 
                 <Button
                   type="submit"
-                  className="w-full"
+                  className="w-full mt-8 h-12 text-base uppercase tracking-wider font-bold"
                   disabled={isLoading}
                   data-testid="button-login"
                 >
                   {isLoading ? (
                     <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Вход...
+                      <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                      Loading...
                     </>
                   ) : (
-                    "Войти"
+                    "Sign In"
                   )}
                 </Button>
               </form>
@@ -153,10 +144,6 @@ export default function LoginPage() {
           </CardContent>
         </Card>
       </main>
-      
-      <footer className="p-4 text-center text-sm text-muted-foreground">
-        Betting Platform &copy; {new Date().getFullYear()}
-      </footer>
     </div>
   );
 }

@@ -45,15 +45,15 @@ function formatDateTime(dt: string | Date): string {
 function statusLabel(status: string) {
   switch (status) {
     case "upcoming":
-      return "Скоро";
+      return "Upcoming";
     case "live":
-      return "В эфире";
+      return "Live";
     case "finished":
-      return "Завершён";
+      return "Finished";
     case "canceled":
-      return "Отменён";
+      return "Canceled";
     default:
-      return status;
+      return status.toUpperCase();
   }
 }
 
@@ -173,31 +173,29 @@ export default function DashboardPage() {
   }
 
   return (
-    <Tabs defaultValue="events" className="min-h-screen flex flex-col">
-      <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur">
-        <div className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8 py-3 flex items-center gap-4">
-          <div className="text-lg font-extrabold tracking-wide select-none whitespace-nowrap">ЛУДИК.РФ</div>
+    <Tabs defaultValue="events" className="min-h-screen flex flex-col bg-white">
+      <header className="sticky top-0 z-10 border-b-2 border-black bg-white">
+        <div className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8 py-4 flex items-center gap-4">
+          <div className="text-xl font-bold tracking-widest select-none whitespace-nowrap">LUDIC.RF</div>
           <div className="flex-1 flex justify-center">
-            <TabsList className="bg-muted p-1">
-              <TabsTrigger value="events">События</TabsTrigger>
-              <TabsTrigger value="leaders">Лидеры</TabsTrigger>
-              <TabsTrigger value="history">История</TabsTrigger>
+            <TabsList>
+              <TabsTrigger value="events">Events</TabsTrigger>
+              <TabsTrigger value="leaders">Leaders</TabsTrigger>
+              <TabsTrigger value="history">History</TabsTrigger>
             </TabsList>
           </div>
-          <div className="ml-auto flex items-center gap-2 sm:gap-3">
-            <div className="text-sm text-muted-foreground whitespace-nowrap flex items-center gap-2">
-              Баланс: {walletLoading ? (
+          <div className="ml-auto flex items-center gap-3">
+            <div className="text-xs font-bold uppercase tracking-wider whitespace-nowrap flex items-center gap-2 border-2 border-black px-3 py-2">
+              Balance: {walletLoading ? (
                 <span className="inline-block align-middle"><Skeleton className="h-4 w-16" /></span>
               ) : (
-                <span className="font-semibold text-foreground">{formatAmount(balance)}</span>
+                <span className="font-bold">{formatAmount(balance)}</span>
               )}
-              <Button size="icon" variant="secondary" onClick={topUp} title="Пополнить на 1000" className="h-7 w-7">
-                <Plus className="h-4 w-4" />
+              <Button size="icon" variant="ghost" onClick={topUp} title="Top up 1000" className="h-6 w-6 border-2 border-black">
+                <Plus className="h-3 w-3" />
               </Button>
             </div>
-            <div className="text-xs text-muted-foreground whitespace-nowrap">Пополнений: {topUpCount}</div>
-            <ThemeToggle />
-            <Button variant="secondary" onClick={logout}>Выход</Button>
+            <Button variant="outline" onClick={logout} className="text-xs uppercase tracking-wider">Exit</Button>
           </div>
         </div>
       </header>
@@ -231,46 +229,55 @@ export default function DashboardPage() {
                   const bettingOpen = ev.status === "upcoming";
                   const resultText = ev.score ? `${ev.score.team1}:${ev.score.team2}` : "—";
                   return (
-                    <Card key={ev.eventId} className="transition-shadow hover:shadow-md hover:bg-muted/40 border group">
-                      <CardHeader>
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <CardTitle className="text-base">{ev.team1} — {ev.team2}</CardTitle>
-                            <CardDescription>
-                              {ev.tournament} • Тур {ev.round} • ID {ev.eventId}
-                              <span className="block mt-1">{ev.date} • {ev.mskTime} (MSK)</span>
-                            </CardDescription>
+                    <Card key={ev.eventId} className="transition-all hover:shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+                      <CardHeader className="pb-0 border-b-2 border-black">
+                        <div className="flex items-start justify-between gap-4 pb-4">
+                          <div className="flex-1">
+                            <CardTitle className="text-2xl font-bold tracking-tight mb-2">
+                              {ev.team1} <span className="text-neutral-400">VS</span> {ev.team2}
+                            </CardTitle>
+                            <div className="text-xs font-bold uppercase tracking-wider text-neutral-600 space-y-1">
+                              <div>{ev.tournament} • Round {ev.round}</div>
+                              <div>{ev.date} • {ev.mskTime} MSK</div>
+                            </div>
                           </div>
-                          <div className="text-right shrink-0">
-                            <div className="text-xs font-medium">Статус: <span className="px-1.5 py-0.5 rounded bg-muted text-foreground/80">{statusLabel(ev.status)}</span></div>
-                            <div className="text-xs text-muted-foreground mt-1">Счёт: <span className="font-semibold text-foreground/80">{resultText}</span></div>
+                          <div className="shrink-0 text-right border-l-2 border-black pl-4">
+                            <div className="text-xs font-bold uppercase tracking-wider mb-1">Status</div>
+                            <div className="px-3 py-1 bg-black text-white text-xs font-bold uppercase tracking-wider">{statusLabel(ev.status)}</div>
+                            <div className="text-xs font-bold uppercase tracking-wider mt-2 mb-1">Score</div>
+                            <div className="text-2xl font-bold">{resultText}</div>
                           </div>
                         </div>
                       </CardHeader>
-                      <CardContent>
-                        <div className="grid grid-cols-3 gap-3">
-                          {(["win1","draw","win2"] as const).map((key) => {
-                            const label = key === "win1" ? "П1" : key === "draw" ? "Н" : "П2";
+                      <CardContent className="pt-4 pb-4">
+                        <div className="grid grid-cols-3 gap-0 border-2 border-black">
+                          {(["win1","draw","win2"] as const).map((key, idx) => {
+                            const label = key === "win1" ? "Win 1" : key === "draw" ? "Draw" : "Win 2";
                             const odd = ev.odds[key];
                             return (
-                              <Button
+                              <button
                                 key={key}
-                                variant={bettingOpen ? "default" : "secondary"}
                                 disabled={!bettingOpen}
-                                className="w-full h-12 flex flex-col items-center justify-center"
+                                className={`h-16 flex flex-col items-center justify-center transition-colors ${
+                                  bettingOpen
+                                    ? "bg-white hover:bg-black hover:text-white cursor-pointer"
+                                    : "bg-neutral-100 text-neutral-400 cursor-not-allowed"
+                                } ${idx < 2 ? "border-r-2 border-black" : ""}`}
                                 onClick={() => {
-                                  setSelected({ event: ev, selectionKey: key });
-                                  setBetOpen(true);
+                                  if (bettingOpen) {
+                                    setSelected({ event: ev, selectionKey: key });
+                                    setBetOpen(true);
+                                  }
                                 }}
                               >
-                                <span className="text-[10px] text-muted-foreground leading-none">{label}</span>
-                                <span className="text-lg font-semibold leading-none">{odd}</span>
-                              </Button>
+                                <span className="text-[10px] font-bold uppercase tracking-widest mb-1">{label}</span>
+                                <span className="text-xl font-bold">{odd}</span>
+                              </button>
                             );
                           })}
                         </div>
                         {!bettingOpen && (
-                          <div className="text-xs text-muted-foreground mt-2">Ставки на это событие недоступны</div>
+                          <div className="text-xs font-bold uppercase tracking-wider text-neutral-500 mt-3 text-center">Betting unavailable</div>
                         )}
                       </CardContent>
                     </Card>
@@ -288,32 +295,32 @@ export default function DashboardPage() {
                 ))}
               </div>
             ) : (leaderboardData?.leaders?.length ?? 0) === 0 ? (
-              <p className="text-sm text-muted-foreground">Лидеров пока нет</p>
+              <p className="text-xs font-bold uppercase tracking-wider text-neutral-500">No leaders yet</p>
             ) : (
               <Card>
-                <CardHeader>
-                  <CardTitle>Список лидеров</CardTitle>
-                  <CardDescription>Баланс, количество ставок и точность</CardDescription>
+                <CardHeader className="border-b-2 border-black">
+                  <CardTitle className="text-xl uppercase tracking-wider">Leaderboard</CardTitle>
+                  <CardDescription className="text-xs font-bold uppercase tracking-wider text-neutral-600">Balance, Bets & Win Rate</CardDescription>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="p-0">
                   <Table>
                     <TableHeader>
                       <TableRow>
                         <TableHead className="w-12">#</TableHead>
-                        <TableHead>Пользователь</TableHead>
-                        <TableHead className="text-right">Баланс</TableHead>
-                        <TableHead className="text-right">Ставок</TableHead>
-                        <TableHead className="text-right">Точность</TableHead>
+                        <TableHead>User</TableHead>
+                        <TableHead className="text-right">Balance</TableHead>
+                        <TableHead className="text-right">Bets</TableHead>
+                        <TableHead className="text-right">Win Rate</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {leaderboardData!.leaders.map((l, idx) => (
                         <TableRow key={l.userId}>
-                          <TableCell>{idx + 1}</TableCell>
-                          <TableCell className="truncate max-w-[180px]" title={l.userName || l.userId}>{l.userName || l.userId}</TableCell>
-                          <TableCell className="text-right font-medium">{formatAmount(l.balance)}</TableCell>
-                          <TableCell className="text-right">{l.totalBets}</TableCell>
-                          <TableCell className="text-right">{l.winRate}%</TableCell>
+                          <TableCell className="font-bold">{idx + 1}</TableCell>
+                          <TableCell className="truncate max-w-[180px] font-medium" title={l.userName || l.userId}>{l.userName || l.userId}</TableCell>
+                          <TableCell className="text-right font-bold">{formatAmount(l.balance)}</TableCell>
+                          <TableCell className="text-right font-medium">{l.totalBets}</TableCell>
+                          <TableCell className="text-right font-bold">{l.winRate}%</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -331,22 +338,35 @@ export default function DashboardPage() {
                 ))}
               </div>
             ) : (betsData?.length ?? 0) === 0 ? (
-              <p className="text-sm text-muted-foreground">История пуста</p>
+              <p className="text-xs font-bold uppercase tracking-wider text-neutral-500">No bets yet</p>
             ) : (
               <div className="space-y-3">
                 {betsData!.map((bet) => (
-                  <Card key={bet.id} className="hover:bg-muted/40 transition-colors">
+                  <Card key={bet.id} className="hover:shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] transition-all">
                     <CardContent className="py-4 flex items-center justify-between gap-4">
-                      <div className="min-w-0">
-                        <div className="font-medium truncate max-w-[260px]" title={bet.eventName}>{bet.eventName}</div>
-                        <div className="text-xs text-muted-foreground mt-1">
-                          {bet.selection} • Коэф. {bet.odds} • {formatDateTime(bet.createdAt as unknown as string)}
+                      <div className="min-w-0 flex-1">
+                        <div className="font-bold text-base truncate max-w-[300px]" title={bet.eventName}>{bet.eventName}</div>
+                        <div className="text-xs font-bold uppercase tracking-wider text-neutral-600 mt-2 space-x-2">
+                          <span>{bet.selection}</span>
+                          <span>•</span>
+                          <span>Odds {bet.odds}</span>
+                          <span>•</span>
+                          <span>{formatDateTime(bet.createdAt as unknown as string)}</span>
                         </div>
                       </div>
-                      <div className="text-right shrink-0">
-                        <div className="text-sm font-semibold">-{formatAmount(bet.amount)}</div>
-                        <div className="text-xs text-muted-foreground">{bet.status === "pending" ? "В ожидании" : bet.status === "won" ? "Выигрыш" : bet.status === "lost" ? "Проигрыш" : bet.status}</div>
-                        <div className="text-xs text-muted-foreground">Результат: {bet.result || "—"}</div>
+                      <div className="shrink-0 text-right border-l-2 border-black pl-4 min-w-[120px]">
+                        <div className="text-lg font-bold">-{formatAmount(bet.amount)}</div>
+                        <div className={`text-xs font-bold uppercase tracking-wider mt-1 px-2 py-1 ${
+                          bet.status === "pending" ? "bg-neutral-200 text-black" :
+                          bet.status === "won" ? "bg-black text-white" :
+                          bet.status === "lost" ? "bg-neutral-400 text-black" :
+                          "bg-neutral-100 text-black"
+                        }`}>
+                          {bet.status === "pending" ? "Pending" : bet.status === "won" ? "Won" : bet.status === "lost" ? "Lost" : bet.status}
+                        </div>
+                        <div className="text-xs font-bold uppercase tracking-wider text-neutral-600 mt-1">
+                          Result: {bet.result || "—"}
+                        </div>
                       </div>
                     </CardContent>
                   </Card>
@@ -361,23 +381,29 @@ export default function DashboardPage() {
       <Dialog open={betOpen} onOpenChange={setBetOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Оформление ставки</DialogTitle>
+            <DialogTitle>Place Bet</DialogTitle>
           </DialogHeader>
           {selected && (
-            <div className="space-y-4">
-              <div className="text-sm text-muted-foreground">
-                Событие: <span className="font-medium text-foreground">{selected.event.team1} — {selected.event.team2}</span>
-                <br />
-                Выбор: <span className="font-medium text-foreground">{selected.selectionKey === "win1" ? "П1" : selected.selectionKey === "draw" ? "Н" : "П2"}</span>
-                <br />
-                Коэффициент: <span className="font-medium text-foreground">{selectedOdds}</span>
+            <div className="space-y-6">
+              <div className="border-2 border-black p-4 space-y-2">
+                <div className="text-xs font-bold uppercase tracking-wider text-neutral-600">Event</div>
+                <div className="font-bold text-base">{selected.event.team1} VS {selected.event.team2}</div>
+
+                <div className="text-xs font-bold uppercase tracking-wider text-neutral-600 mt-3">Selection</div>
+                <div className="font-bold">{selected.selectionKey === "win1" ? "Win 1" : selected.selectionKey === "draw" ? "Draw" : "Win 2"}</div>
+
+                <div className="text-xs font-bold uppercase tracking-wider text-neutral-600 mt-3">Odds</div>
+                <div className="font-bold text-2xl">{selectedOdds}</div>
               </div>
-              <div className="grid gap-2">
-                <Label htmlFor="bet-amount">Сумма ставки</Label>
-                <Input id="bet-amount" inputMode="decimal" placeholder="Введите сумму" value={betAmount} onChange={(e) => setBetAmount(e.target.value)} />
+
+              <div className="space-y-2">
+                <Label htmlFor="bet-amount">Bet Amount</Label>
+                <Input id="bet-amount" inputMode="decimal" placeholder="Enter amount" value={betAmount} onChange={(e) => setBetAmount(e.target.value)} />
               </div>
-              <DialogFooter>
-                <Button onClick={placeBet}>Поставить</Button>
+
+              <DialogFooter className="gap-2">
+                <Button variant="outline" onClick={() => setBetOpen(false)} className="flex-1">Cancel</Button>
+                <Button onClick={placeBet} className="flex-1">Place Bet</Button>
               </DialogFooter>
             </div>
           )}
